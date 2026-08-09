@@ -1,0 +1,31 @@
+{
+  "version": 4,
+  "rules": [
+    {
+      "domain": [
+        "www.baidu.com"
+      ]
+    },
+    {
+      "domain_suffix": [
+        "bdimg.com",
+        "ipleak.net",
+        "ip.sb",
+        "browserleaks.com",
+        "ip138.com",
+        "ip2location.io",
+        "myip.com",
+        "ping0.cc",
+        "ipinfo.io",
+        "iping.cc",
+        "ipaddress.com",
+        "ipshu.com",
+        "ipip.net",
+        "test-ipv6.com",
+        "ipwho.is",
+        "ipapi.is",
+        "whoer.net"
+      ]
+    }
+  ]
+}

@@ -16,28 +16,31 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
+  test:
     runs-on: ubuntu-latest
-
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y curl
+      - name: Run unit tests
+        run: python3 tests/test_build_srs.py
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Install sing-box stable
         run: |
           curl -fsSL https://sing-box.app/install.sh | sudo sh
           sing-box version
 
-      - name: Build Rule Sets
-        run: |
-          python3 .github/scripts/build_srs.py
+      - name: Build SRS
+        run: python3 .github/scripts/build_srs.py
 
       - name: Commit generated files
         run: |
@@ -46,7 +49,7 @@ jobs:
           git add -A
           if git diff --cached --quiet; then
             echo "No changes to commit."
-            exit 0
+          else
+            git commit -m "build: update rule sets"
+            git push
           fi
-          git commit -m "build: update rule sets"
-          git push

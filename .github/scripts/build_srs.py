@@ -1,1546 +1,671 @@
 #!/usr/bin/env python3
 
+import ipaddress
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
-from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
-
-
-# ============================================================
-# 基本配置
-# ============================================================
+from urllib.request import Request, urlopen
 
 ROOT = Path(".").resolve()
-
 README = ROOT / "README.md"
-
 TARGET_VERSION = 4
+SKIP_DIRS = {".git", ".github"}
+SKIP_FILES = {"README.md"}
 
-SKIP_DIRS = {
-    ".git",
-    ".github",
-}
+RULE_FIELDS = (
+    "domain",
+    "domain_suffix",
+    "domain_keyword",
+    "domain_regex",
+    "ip_cidr",
+)
 
-SKIP_FILES = {
-    "README.md",
-}
-
-
-# ============================================================
-# 日志
-# ============================================================
 
 def log(message):
     print(message, flush=True)
 
 
-def relative(path):
+def rel(path):
     return str(path.relative_to(ROOT))
 
 
-# ============================================================
-# URL 判断
-# ============================================================
-
 def is_url(value):
-    return (
-        value.startswith("http://")
-        or value.startswith("https://")
-    )
+    return value.startswith(("http://", "https://"))
 
-
-# ============================================================
-# 判断无后缀文件是否为 URL 文件
-#
-# 例如：
-#
-# apple
-# ├── https://xxx/apple.json
-# └── https://xxx/apple-ip.json
-#
-# ============================================================
 
 def is_url_file(path):
-
-    if path.suffix:
+    if path.suffix or path.name in SKIP_FILES:
         return False
-
-    if path.name in SKIP_FILES:
-        return False
-
     try:
-        text = path.read_text(
-            encoding="utf-8"
-        )
+        lines = [
+            x.strip()
+            for x in path.read_text(encoding="utf-8").splitlines()
+            if x.strip()
+        ]
     except Exception:
         return False
+    return bool(lines) and all(is_url(x) for x in lines)
 
-    lines = [
-        line.strip()
-        for line in text.splitlines()
-        if line.strip()
-    ]
-
-    if not lines:
-        return False
-
-    return all(
-        is_url(line)
-        for line in lines
-    )
-
-
-# ============================================================
-# 查找所有无后缀 URL 文件
-# ============================================================
 
 def find_url_files():
-
     result = []
-
     for path in ROOT.rglob("*"):
-
         if not path.is_file():
             continue
-
-        relative_path = path.relative_to(ROOT)
-
-        if any(
-            part in SKIP_DIRS
-            for part in relative_path.parts
-        ):
+        rp = path.relative_to(ROOT)
+        if any(x in SKIP_DIRS for x in rp.parts):
             continue
-
-        if path.name in SKIP_FILES:
-            continue
-
         if is_url_file(path):
             result.append(path)
-
     return sorted(result)
 
-
-# ============================================================
-# 查找所有 JSON 文件
-# ============================================================
 
 def find_json_files():
-
     result = []
-
     for path in ROOT.rglob("*.json"):
-
         if not path.is_file():
             continue
-
-        relative_path = path.relative_to(ROOT)
-
-        if any(
-            part in SKIP_DIRS
-            for part in relative_path.parts
-        ):
+        rp = path.relative_to(ROOT)
+        if any(x in SKIP_DIRS for x in rp.parts):
             continue
-
         if path.name in SKIP_FILES:
             continue
-
         result.append(path)
-
     return sorted(result)
 
 
-# ============================================================
-# JSON 加载
-# ============================================================
-
-def load_json_bytes(
-    content,
-    source
-):
-
+def parse_json_bytes(content, source):
     try:
-        text = content.decode(
-            "utf-8"
-        )
-
+        text = content.decode("utf-8")
     except UnicodeDecodeError as e:
-
-        raise ValueError(
-            f"{source}: UTF-8 解码失败: {e}"
-        )
+        raise ValueError(f"{source}: UTF-8 解码失败: {e}")
 
     try:
-
         data = json.loads(text)
-
     except json.JSONDecodeError as e:
+        raise ValueError(f"{source}: JSON 解析失败: {e}")
 
+    if not isinstance(data, dict):
+        raise ValueError(f"{source}: JSON 根节点必须是对象")
+
+    version = data.get("version")
+    if not isinstance(version, int):
+        raise ValueError(f"{source}: version 必须是整数")
+    if version > TARGET_VERSION:
         raise ValueError(
-            f"{source}: JSON 解析失败: {e}"
+            f"{source}: version={version} 高于目标 version={TARGET_VERSION}"
         )
 
-    if not isinstance(
-        data,
-        dict
-    ):
+    rules = data.get("rules")
+    if not isinstance(rules, list):
+        raise ValueError(f"{source}: rules 必须是数组")
 
-        raise ValueError(
-            f"{source}: JSON 根节点必须是对象"
-        )
+    return {"version": TARGET_VERSION, "rules": rules}
 
-    if "rules" not in data:
-
-        raise ValueError(
-            f"{source}: 缺少 rules"
-        )
-
-    if not isinstance(
-        data["rules"],
-        list
-    ):
-
-        raise ValueError(
-            f"{source}: rules 必须是数组"
-        )
-
-    return data
-
-
-# ============================================================
-# 加载本地 JSON
-# ============================================================
 
 def load_local_json(path):
+    return parse_json_bytes(path.read_bytes(), rel(path))
 
-    with path.open(
-        "rb"
-    ) as f:
-
-        content = f.read()
-
-    return load_json_bytes(
-        content,
-        relative(path)
-    )
-
-
-# ============================================================
-# 下载远程 JSON
-# ============================================================
 
 def download_json(url):
-
-    log(
-        f"      拉取: {url}"
-    )
-
-    request = Request(
-        url,
-        headers={
-            "User-Agent": "a_srs/1.0"
-        }
-    )
-
+    log(f"      拉取: {url}")
+    request = Request(url, headers={"User-Agent": "a_srs/2.0"})
     try:
-
-        with urlopen(
-            request,
-            timeout=60
-        ) as response:
-
+        with urlopen(request, timeout=60) as response:
             content = response.read()
-
     except HTTPError as e:
-
-        raise RuntimeError(
-            f"HTTP {e.code} {e.reason}"
-        )
-
+        raise RuntimeError(f"HTTP {e.code} {e.reason}")
     except URLError as e:
-
-        raise RuntimeError(
-            f"网络错误: {e.reason}"
-        )
-
+        raise RuntimeError(f"网络错误: {e.reason}")
     except Exception as e:
-
-        raise RuntimeError(
-            f"拉取失败: {e}"
-        )
-
-    return load_json_bytes(
-        content,
-        url
-    )
+        raise RuntimeError(f"拉取失败: {e}")
+    return parse_json_bytes(content, url)
 
 
-# ============================================================
-# 统一 Source Format version
-#
-# 允许：
-#
-# version 1
-# version 2
-# version 3
-# version 4
-#
-# 最终统一输出：
-#
-# version 4
-#
-# version > 4 拒绝处理
-# 因为不能安全降级未来版本格式。
-# ============================================================
+def collect_rules(rule_sets):
+    merged = {field: [] for field in RULE_FIELDS}
+    extra = {}
 
-def normalize_version(
-    data,
-    source
-):
+    for data in rule_sets:
+        for rule in data["rules"]:
+            if not isinstance(rule, dict):
+                raise ValueError("rules 中存在不是对象的项目")
 
-    version = data.get(
-        "version"
-    )
+            for key, value in rule.items():
+                if key in RULE_FIELDS:
+                    if not isinstance(value, list):
+                        raise ValueError(f"字段 {key} 必须是数组")
+                    merged[key].extend(value)
+                else:
+                    extra.setdefault(key, []).append(value)
 
-    if version is None:
-
-        raise ValueError(
-            f"{source}: 缺少 version"
-        )
-
-    if not isinstance(
-        version,
-        int
-    ):
-
-        raise ValueError(
-            f"{source}: version 必须是整数"
-        )
-
-    if version > TARGET_VERSION:
-
-        raise ValueError(
-            f"{source}: version={version} "
-            f"高于目标 version={TARGET_VERSION}"
-        )
-
-    return {
-        "version": TARGET_VERSION,
-        "rules": data["rules"]
-    }
+    return merged, extra
 
 
-# ============================================================
-# 完全匹配去重
-#
-# 保持第一次出现的顺序。
-# ============================================================
+def normalize_domain(value):
+    if not isinstance(value, str):
+        return value
+    value = value.strip().lower()
+    if value.endswith("."):
+        value = value[:-1]
+    return value
 
-def dedupe_exact_array(
-    values
-):
 
-    result = []
-
+def exact_dedupe(values):
     seen = set()
-
+    result = []
     for value in values:
-
         key = json.dumps(
             value,
             ensure_ascii=False,
             sort_keys=True,
-            separators=(
-                ",",
-                ":"
-            )
+            separators=(",", ":"),
         )
+        if key not in seen:
+            seen.add(key)
+            result.append(value)
+    return result
 
-        if key in seen:
+
+def dedupe_domain(values):
+    return exact_dedupe(values)
+
+
+def dedupe_keyword(values):
+    values = [x for x in exact_dedupe(values) if isinstance(x, str)]
+    normalized = []
+    seen_norm = set()
+
+    for value in values:
+        v = value.strip().lower()
+        if v not in seen_norm:
+            seen_norm.add(v)
+            normalized.append(value)
+
+    ordered = sorted(normalized, key=lambda x: (len(x), x.lower()))
+    result = []
+
+    for value in ordered:
+        v = value.strip().lower()
+        if any(parent.strip().lower() in v for parent in result):
             continue
-
-        seen.add(key)
-
         result.append(value)
 
     return result
 
 
-# ============================================================
-# 域名标准化
-#
-# 只用于比较，不修改最终输出。
-# ============================================================
+def suffix_covers(parent, child):
+    parent = normalize_domain(parent)
+    child = normalize_domain(child)
 
-def normalize_domain(
-    value
-):
-
-    if not isinstance(
-        value,
-        str
-    ):
-        return value
-
-    value = value.strip().lower()
-
-    # 删除 DNS 名称末尾的 .
-    if value.endswith("."):
-        value = value[:-1]
-
-    return value
-
-
-# ============================================================
-# 判断 domain_suffix 是否覆盖某个域名
-#
-# parent:
-#     example.com
-#
-# child:
-#     www.example.com
-#
-# True
-#
-# 但：
-#
-# example.com
-# badexample.com
-#
-# False
-#
-# ============================================================
-
-def domain_suffix_covers(
-    parent,
-    child
-):
-
-    parent = normalize_domain(
-        parent
-    )
-
-    child = normalize_domain(
-        child
-    )
-
-    if not isinstance(
-        parent,
-        str
-    ):
+    if not isinstance(parent, str) or not isinstance(child, str):
         return False
 
-    if not isinstance(
-        child,
-        str
-    ):
-        return False
-
-    if parent == child:
-        return True
-
-    return child.endswith(
-        "." + parent
-    )
+    return child == parent or child.endswith("." + parent)
 
 
-# ============================================================
-# domain_suffix 智能去重
-#
-# 例如：
-#
-# example.com
-# sub.example.com
-# api.sub.example.com
-#
-# 最终：
-#
-# example.com
-#
-# ============================================================
-
-def dedupe_domain_suffix(
-    values
-):
-
-    # 第一层：完全匹配去重
-    values = dedupe_exact_array(
-        values
-    )
-
-    result = []
+def dedupe_suffix(values):
+    values = [x for x in exact_dedupe(values) if isinstance(x, str)]
+    normalized = []
+    seen = set()
 
     for value in values:
+        v = normalize_domain(value)
+        if v not in seen:
+            seen.add(v)
+            normalized.append(value)
 
-        if not isinstance(
-            value,
-            str
-        ):
-
-            result.append(value)
-
-            continue
-
-        covered = False
-
-        for existing in result:
-
-            if not isinstance(
-                existing,
-                str
-            ):
-                continue
-
-            if domain_suffix_covers(
-                existing,
-                value
-            ):
-
-                covered = True
-
-                break
-
-        if not covered:
-
-            result.append(value)
-
-    return result
-
-
-# ============================================================
-# 处理单个 Rule
-#
-# 所有数组字段：
-#     完全匹配去重
-#
-# domain_suffix：
-#     完全匹配 + 父后缀智能去重
-#
-# 空 []：
-#     删除字段
-#
-# ============================================================
-
-def process_rule(
-    rule
-):
-
-    if not isinstance(
-        rule,
-        dict
-    ):
-
-        raise ValueError(
-            "rules 中存在不是对象的项目"
-        )
-
-    result = {}
-
-    for key, value in rule.items():
-
-        if isinstance(
-            value,
-            list
-        ):
-
-            if key == "domain_suffix":
-
-                value = dedupe_domain_suffix(
-                    value
-                )
-
-            else:
-
-                value = dedupe_exact_array(
-                    value
-                )
-
-            # 空数组自动删除
-            if not value:
-                continue
-
-        elif value is None:
-
-            continue
-
-        result[key] = value
-
-    return result
-
-
-# ============================================================
-# 收集全部 domain_suffix
-# ============================================================
-
-def collect_domain_suffixes(
-    rules
-):
-
-    suffixes = []
-
-    for rule in rules:
-
-        values = rule.get(
-            "domain_suffix",
-            []
-        )
-
-        for value in values:
-
-            if isinstance(
-                value,
-                str
-            ):
-
-                suffixes.append(
-                    value
-                )
-
-    return dedupe_domain_suffix(
-        suffixes
+    ordered = sorted(
+        normalized,
+        key=lambda x: (
+            normalize_domain(x).count("."),
+            len(normalize_domain(x)),
+            normalize_domain(x),
+        ),
     )
-
-
-# ============================================================
-# domain_suffix → domain
-#
-# 如果 suffix 能覆盖 domain：
-#
-#     删除 domain
-#
-# 例如：
-#
-# domain:
-#     www.example.com
-#
-# domain_suffix:
-#     example.com
-#
-# 删除：
-#
-# www.example.com
-#
-# ============================================================
-
-def remove_domains_covered_by_suffix(
-    rules
-):
-
-    suffixes = collect_domain_suffixes(
-        rules
-    )
-
-    if not suffixes:
-        return rules
 
     result = []
-
-    for rule in rules:
-
-        if "domain" not in rule:
-
-            result.append(
-                rule
-            )
-
+    for value in ordered:
+        v = normalize_domain(value)
+        if any(suffix_covers(existing, v) for existing in result):
             continue
-
-        domains = rule.get(
-            "domain",
-            []
-        )
-
-        new_domains = []
-
-        for domain in domains:
-
-            if not isinstance(
-                domain,
-                str
-            ):
-
-                new_domains.append(
-                    domain
-                )
-
-                continue
-
-            covered = False
-
-            for suffix in suffixes:
-
-                if domain_suffix_covers(
-                    suffix,
-                    domain
-                ):
-
-                    covered = True
-
-                    break
-
-            if not covered:
-
-                new_domains.append(
-                    domain
-                )
-
-        new_rule = dict(
-            rule
-        )
-
-        if new_domains:
-
-            new_rule["domain"] = (
-                dedupe_exact_array(
-                    new_domains
-                )
-            )
-
-        else:
-
-            # domain 变成空数组
-            # 直接删除字段
-            new_rule.pop(
-                "domain",
-                None
-            )
-
-        # 如果 {}：
-        # 不加入 rules
-        if new_rule:
-
-            result.append(
-                new_rule
-            )
+        result.append(value)
 
     return result
 
 
-# ============================================================
-# 最终 Rule 清理
-#
-# 1. [] 删除
-# 2. {} 删除
-#
-# ============================================================
+def dedupe_regex(values):
+    values = [x for x in exact_dedupe(values) if isinstance(x, str)]
+    normalized = []
+    seen = set()
 
-def clean_rules(
-    rules
-):
+    for value in values:
+        v = value.strip()
+        if v not in seen:
+            seen.add(v)
+            normalized.append(value)
 
-    cleaned = []
+    ordered = sorted(normalized, key=lambda x: (len(x), x))
+    result = []
 
-    for rule in rules:
+    for value in ordered:
+        if any(parent in value for parent in result):
+            continue
+        result.append(value)
 
-        if not isinstance(
-            rule,
-            dict
-        ):
+    return result
+
+
+def parse_network(value):
+    if not isinstance(value, str):
+        return None
+    try:
+        return ipaddress.ip_network(value.strip(), strict=False)
+    except ValueError:
+        return None
+
+
+def dedupe_ip_cidr(values):
+    values = exact_dedupe(values)
+    valid = []
+    invalid = []
+    seen_text = set()
+
+    for value in values:
+        if not isinstance(value, str):
+            invalid.append(value)
             continue
 
-        # 删除所有空数组字段
-        new_rule = {}
-
-        for key, value in rule.items():
-
-            if isinstance(
-                value,
-                list
-            ):
-
-                if not value:
-                    continue
-
-            if value is None:
-                continue
-
-            new_rule[
-                key
-            ] = value
-
-        # 空 {} 删除
-        if not new_rule:
+        text = value.strip()
+        if text in seen_text:
             continue
+        seen_text.add(text)
 
-        cleaned.append(
-            new_rule
-        )
+        network = parse_network(text)
+        if network is None:
+            invalid.append(value)
+        else:
+            valid.append((network, value))
 
-    return cleaned
-
-
-# ============================================================
-# 合并多个 Rule Set
-#
-# ============================================================
-
-def merge_rule_sets(
-    rule_sets
-):
-
-    merged_rules = []
-
-    for data in rule_sets:
-
-        for rule in data[
-            "rules"
-        ]:
-
-            processed = process_rule(
-                rule
-            )
-
-            # 空 {} 不加入
-            if processed:
-
-                merged_rules.append(
-                    processed
-                )
-
-    # --------------------------------------------------------
-    # domain_suffix 自身智能去重
-    # --------------------------------------------------------
-
-    for rule in merged_rules:
-
-        if "domain_suffix" in rule:
-
-            rule[
-                "domain_suffix"
-            ] = dedupe_domain_suffix(
-                rule[
-                    "domain_suffix"
-                ]
-            )
-
-    # --------------------------------------------------------
-    # domain_suffix → domain
-    #
-    # suffix 覆盖 domain
-    # 删除 domain
-    # --------------------------------------------------------
-
-    merged_rules = (
-        remove_domains_covered_by_suffix(
-            merged_rules
+    valid.sort(
+        key=lambda item: (
+            item[0].version,
+            item[0].prefixlen,
+            str(item[0].network_address),
         )
     )
 
-    # --------------------------------------------------------
-    # 最终清理
-    #
-    # [] → 删除
-    # {} → 删除
-    # --------------------------------------------------------
+    kept = []
+    for network, original in valid:
+        covered = False
+        for parent, _ in kept:
+            if network.version == parent.version and network.subnet_of(parent):
+                covered = True
+                break
+        if not covered:
+            kept.append((network, original))
 
-    merged_rules = clean_rules(
-        merged_rules
-    )
+    return [original for _, original in kept] + invalid
 
+
+def normalize_rule_arrays(rule):
+    result = {}
+
+    for field, values in rule.items():
+        if not isinstance(values, list):
+            result[field] = values
+            continue
+
+        if field == "domain":
+            values = dedupe_domain(values)
+        elif field == "domain_keyword":
+            values = dedupe_keyword(values)
+        elif field == "domain_suffix":
+            values = dedupe_suffix(values)
+        elif field == "domain_regex":
+            values = dedupe_regex(values)
+        elif field == "ip_cidr":
+            values = dedupe_ip_cidr(values)
+        else:
+            values = exact_dedupe(values)
+
+        if values:
+            result[field] = values
+
+    return result
+
+
+def regex_matches(pattern, candidate):
+    if not isinstance(pattern, str) or not isinstance(candidate, str):
+        return False
+    try:
+        return re.search(pattern, candidate, re.IGNORECASE) is not None
+    except re.error:
+        return False
+
+
+def remove_by_regex(rule):
+    regexes = rule.get("domain_regex", [])
+    if not regexes:
+        return rule
+
+    result = dict(rule)
+
+    for field in ("domain_keyword", "domain_suffix", "domain"):
+        values = result.get(field, [])
+        new_values = [
+            value
+            for value in values
+            if not any(regex_matches(pattern, value) for pattern in regexes)
+        ]
+
+        if new_values:
+            result[field] = new_values
+        else:
+            result.pop(field, None)
+
+    return result
+
+
+def keyword_covers(keyword, candidate):
+    if not isinstance(keyword, str) or not isinstance(candidate, str):
+        return False
+    return keyword.strip().lower() in candidate.strip().lower()
+
+
+def remove_by_keyword(rule):
+    keywords = rule.get("domain_keyword", [])
+    if not keywords:
+        return rule
+
+    result = dict(rule)
+
+    for field in ("domain_suffix", "domain"):
+        values = result.get(field, [])
+        new_values = [
+            value
+            for value in values
+            if not any(keyword_covers(keyword, value) for keyword in keywords)
+        ]
+
+        if new_values:
+            result[field] = new_values
+        else:
+            result.pop(field, None)
+
+    return result
+
+
+def remove_by_suffix(rule):
+    suffixes = rule.get("domain_suffix", [])
+    if not suffixes:
+        return rule
+
+    result = dict(rule)
+    domains = result.get("domain", [])
+
+    new_domains = [
+        domain
+        for domain in domains
+        if not any(suffix_covers(suffix, domain) for suffix in suffixes)
+    ]
+
+    if new_domains:
+        result["domain"] = new_domains
+    else:
+        result.pop("domain", None)
+
+    return result
+
+
+def apply_parent_hierarchy(rule):
+    rule = remove_by_regex(rule)
+    rule = remove_by_keyword(rule)
+    rule = remove_by_suffix(rule)
+    return rule
+
+
+def clean_empty_arrays(rule):
     return {
-        "version": TARGET_VERSION,
-        "rules": merged_rules
+        key: value
+        for key, value in rule.items()
+        if not (isinstance(value, list) and not value)
     }
 
 
-# ============================================================
-# 写 JSON
-#
-# 绝对不手工处理逗号。
-#
-# json.dump 会自动保证：
-#
-#     最后一个数组元素没有 ,
-#     最后一个对象字段没有 ,
-#
-# 因此删除 {} 后不会出现：
-#
-#     [ , {...} ]
-#
-# 或：
-#
-#     [{...},]
-#
-# ============================================================
+def merge_rule_sets(rule_sets):
+    merged, extra = collect_rules(rule_sets)
 
-def write_json(
-    path,
-    data
-):
+    normalized = normalize_rule_arrays(merged)
+    normalized = apply_parent_hierarchy(normalized)
+    normalized = clean_empty_arrays(normalized)
 
-    path.parent.mkdir(
-        parents=True,
-        exist_ok=True
-    )
+    rules = []
+    if normalized:
+        rules.append(normalized)
 
-    with path.open(
-        "w",
-        encoding="utf-8",
-        newline="\n"
-    ) as f:
+    for key, values in extra.items():
+        values = exact_dedupe(values)
+        if not values:
+            continue
+        if rules:
+            rules[0][key] = values
+        else:
+            rules.append({key: values})
 
-        json.dump(
-            data,
-            f,
-            ensure_ascii=False,
-            indent=2
-        )
+    return {"version": TARGET_VERSION, "rules": rules}
 
+
+def write_json(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="\n") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
         f.write("\n")
 
 
-# ============================================================
-# 编译 SRS
-# ============================================================
-
-def compile_srs(
-    json_path,
-    srs_path
-):
-
+def compile_srs(json_path, srs_path):
     command = [
         "sing-box",
         "rule-set",
         "compile",
         "--output",
         str(srs_path),
-        str(json_path)
+        str(json_path),
     ]
 
-    log(
-        "      编译 SRS: "
-        + " ".join(command)
-    )
+    log("      编译 SRS: " + " ".join(command))
 
     result = subprocess.run(
         command,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True
+        text=True,
     )
 
     if result.returncode != 0:
-
-        message = (
-            result.stderr.strip()
-        )
-
+        detail = result.stderr.strip()
         if result.stdout.strip():
-
-            if message:
-
-                message += "\n"
-
-            message += (
-                result.stdout.strip()
-            )
-
-        raise RuntimeError(
-            message or
-            "sing-box 编译失败"
-        )
+            detail += ("\n" if detail else "") + result.stdout.strip()
+        raise RuntimeError(detail or "sing-box 编译失败")
 
     if not srs_path.exists():
-
-        raise RuntimeError(
-            "sing-box 返回成功，"
-            "但没有生成 SRS 文件"
-        )
-
+        raise RuntimeError("sing-box 返回成功，但没有生成 SRS 文件")
     if srs_path.stat().st_size == 0:
-
-        raise RuntimeError(
-            "生成的 SRS 文件为空"
-        )
+        raise RuntimeError("生成的 SRS 文件为空")
 
 
-# ============================================================
-# 第一阶段：
-#
-# 无后缀 URL 文件 → JSON
-#
-# ============================================================
-
-def process_url_file(
-    path,
-    failures
-):
-
+def process_url_file(path, failures):
     log("")
-    log(
-        f"[远程规则] {relative(path)}"
-    )
+    log(f"[远程规则] {rel(path)}")
 
     lines = [
-        line.strip()
-        for line in path.read_text(
-            encoding="utf-8"
-        ).splitlines()
-        if line.strip()
+        x.strip()
+        for x in path.read_text(encoding="utf-8").splitlines()
+        if x.strip()
     ]
 
     rule_sets = []
 
-    # --------------------------------------------------------
-    # 一个 URL 或多个 URL
-    #
-    # 都先下载。
-    #
-    # 一个 URL：
-    #     最终也经过 version 4 转换
-    #
-    # 多个 URL：
-    #     下载后合并
-    # --------------------------------------------------------
-
     for url in lines:
-
         try:
-
-            data = download_json(
-                url
-            )
-
-            data = normalize_version(
-                data,
-                url
-            )
-
-            rule_sets.append(
-                data
-            )
-
+            rule_sets.append(download_json(url))
         except Exception as e:
-
             failures.append({
-                "file": relative(path),
+                "file": rel(path),
                 "stage": "远程 JSON",
-                "detail": (
-                    f"{url} → {e}"
-                )
+                "detail": f"{url} → {e}",
             })
-
-            log(
-                f"      ❌ {url}: {e}"
-            )
-
-            # 当前 URL 失败
-            # 继续下一个 URL
+            log(f"      ❌ {url}: {e}")
             continue
 
-    # --------------------------------------------------------
-    # 所有 URL 都失败
-    # --------------------------------------------------------
-
     if not rule_sets:
-
-        log(
-            "      ❌ 所有 URL 都失败，"
-            "跳过该文件"
-        )
-
+        log("      ❌ 所有 URL 均失败，跳过该文件")
         return
 
-    # --------------------------------------------------------
-    # 合并 / 去重
-    # --------------------------------------------------------
-
     try:
-
-        merged = merge_rule_sets(
-            rule_sets
-        )
-
+        merged = merge_rule_sets(rule_sets)
     except Exception as e:
-
         failures.append({
-            "file": relative(path),
-            "stage": "合并",
-            "detail": str(e)
+            "file": rel(path),
+            "stage": "合并去重",
+            "detail": str(e),
         })
-
-        log(
-            f"      ❌ 合并失败: {e}"
-        )
-
+        log(f"      ❌ 合并去重失败: {e}")
         return
 
-    # --------------------------------------------------------
-    # 生成同名 JSON
-    # --------------------------------------------------------
-
-    json_path = path.with_suffix(
-        ".json"
-    )
+    json_path = path.with_suffix(".json")
 
     try:
-
-        write_json(
-            json_path,
-            merged
-        )
-
-        log(
-            f"      ✓ 生成 JSON: "
-            f"{relative(json_path)}"
-        )
-
+        write_json(json_path, merged)
+        log(f"      ✓ 生成 JSON: {rel(json_path)}")
     except Exception as e:
-
         failures.append({
-            "file": relative(path),
+            "file": rel(path),
             "stage": "生成 JSON",
-            "detail": str(e)
+            "detail": str(e),
         })
-
-        log(
-            f"      ❌ JSON 生成失败: {e}"
-        )
-
-        return
+        log(f"      ❌ JSON 生成失败: {e}")
 
 
-# ============================================================
-# 检查本地 JSON
-#
-# 本地 JSON 必须已经是 version 4。
-# ============================================================
-
-def process_local_json(
-    path,
-    failures
-):
-
-    log("")
-    log(
-        f"[本地 JSON] {relative(path)}"
-    )
-
-    try:
-
-        data = load_local_json(
-            path
-        )
-
-        version = data.get(
-            "version"
-        )
-
-        if version != TARGET_VERSION:
-
-            raise ValueError(
-                f"要求 version: "
-                f"{TARGET_VERSION}，"
-                f"实际为 version: "
-                f"{version}"
-            )
-
-    except Exception as e:
-
-        failures.append({
-            "file": relative(path),
-            "stage": "JSON 检查",
-            "detail": str(e)
-        })
-
-        log(
-            f"      ❌ {e}"
-        )
-
-        return
-
-
-# ============================================================
-# 第二阶段：
-#
-# 所有 JSON → SRS
-#
-# 注意：
-#
-# 必须等第一阶段所有远程 JSON 全部处理完，
-# 才进入这里。
-# ============================================================
-
-def build_all_srs(
-    failures
-):
-
+def build_all_srs(failures):
     json_files = find_json_files()
 
     log("")
-    log(
-        "========================================"
-    )
-    log(
-        "第二阶段：统一 JSON → SRS"
-    )
-    log(
-        f"JSON 数量: {len(json_files)}"
-    )
-    log(
-        "========================================"
-    )
+    log("========================================")
+    log("第二阶段：统一 JSON → SRS")
+    log(f"JSON 数量: {len(json_files)}")
+    log("========================================")
 
     for json_path in json_files:
-
-        srs_path = json_path.with_suffix(
-            ".srs"
-        )
+        srs_path = json_path.with_suffix(".srs")
 
         try:
+            data = load_local_json(json_path)
+            if data.get("version") != TARGET_VERSION:
+                raise ValueError(f"version 必须为 {TARGET_VERSION}")
 
-            data = load_local_json(
-                json_path
-            )
-
-            if data.get(
-                "version"
-            ) != TARGET_VERSION:
-
-                raise ValueError(
-                    f"version 必须为 "
-                    f"{TARGET_VERSION}"
-                )
-
-            compile_srs(
-                json_path,
-                srs_path
-            )
-
-            log(
-                f"      ✓ {relative(srs_path)}"
-            )
+            compile_srs(json_path, srs_path)
+            log(f"      ✓ {rel(srs_path)}")
 
         except Exception as e:
-
             failures.append({
-                "file": relative(json_path),
+                "file": rel(json_path),
                 "stage": "JSON → SRS",
-                "detail": str(e)
+                "detail": str(e),
             })
-
-            log(
-                f"      ❌ "
-                f"{relative(json_path)}: {e}"
-            )
-
-            # 当前 JSON 失败
-            # 继续下一个 JSON
+            log(f"      ❌ {rel(json_path)}: {e}")
             continue
 
 
-# ============================================================
-# README 状态
-#
-# 只保留最近一次工作流结果。
-#
-# 不保留历史错误。
-# ============================================================
+def update_readme(failures):
+    start_marker = "<!-- SRS-BUILD-STATUS:START -->"
+    end_marker = "<!-- SRS-BUILD-STATUS:END -->"
 
-def update_readme(
-    failures
-):
+    content = README.read_text(encoding="utf-8") if README.exists() else "# a_srs\n"
 
-    if README.exists():
-
-        content = README.read_text(
-            encoding="utf-8"
-        )
-
-    else:
-
-        content = "# a_srs\n"
-
-    start_marker = (
-        "<!-- SRS-BUILD-STATUS:START -->"
-    )
-
-    end_marker = (
-        "<!-- SRS-BUILD-STATUS:END -->"
-    )
-
-    lines = []
-
-    lines.append(
-        start_marker
-    )
-
-    lines.append("")
-
-    lines.append(
-        "## SRS 构建状态"
-    )
-
-    lines.append("")
-
-    # --------------------------------------------------------
-    # 全部成功
-    # --------------------------------------------------------
+    lines = [start_marker, "", "## SRS 构建状态", ""]
 
     if not failures:
-
-        lines.append(
-            "### ✅ 本次工作流全部成功"
-        )
-
-        lines.append("")
-
-        lines.append(
-            "所有远程规则拉取、JSON 合并、"
-            "JSON 生成及 SRS 编译均成功。"
-        )
-
-    # --------------------------------------------------------
-    # 存在失败
-    # --------------------------------------------------------
-
+        lines += [
+            "### ✅ 本次工作流全部成功",
+            "",
+            "所有远程规则拉取、JSON 合并去重、JSON 生成及 SRS 编译均成功。",
+        ]
     else:
-
-        lines.append(
-            "### ⚠️ 本次工作流存在失败"
-        )
-
-        lines.append("")
-
-        lines.append(
-            "单个文件或 URL 失败不会影响其它"
-            "文件继续处理。"
-        )
-
-        lines.append("")
-
-        lines.append(
-            "| 文件 | 阶段 | 详细错误 |"
-        )
-
-        lines.append(
-            "|---|---|---|"
-        )
+        lines += [
+            "### ⚠️ 本次工作流存在失败",
+            "",
+            "单个 URL、JSON 或 SRS 失败不会阻止其它文件继续处理。",
+            "",
+            "| 文件 | 阶段 | 详细错误 |",
+            "|---|---|---|",
+        ]
 
         for item in failures:
-
-            file_name = (
-                item["file"]
-                .replace(
-                    "|",
-                    "\\|"
-                )
-            )
-
-            stage = (
-                item["stage"]
-                .replace(
-                    "|",
-                    "\\|"
-                )
-            )
-
+            file_name = str(item["file"]).replace("|", "\\|")
+            stage = str(item["stage"]).replace("|", "\\|")
             detail = (
                 str(item["detail"])
-                .replace(
-                    "|",
-                    "\\|"
-                )
-                .replace(
-                    "\n",
-                    "<br>"
-                )
+                .replace("|", "\\|")
+                .replace("\n", "<br>")
             )
+            lines.append(f"| `{file_name}` | {stage} | {detail} |")
 
-            lines.append(
-                f"| `{file_name}` | "
-                f"{stage} | "
-                f"{detail} |"
-            )
+    lines += ["", end_marker]
+    block = "\n".join(lines)
 
-    lines.append("")
-
-    lines.append(
-        end_marker
-    )
-
-    new_block = "\n".join(
-        lines
-    )
-
-    # --------------------------------------------------------
-    # 替换上一次状态
-    # --------------------------------------------------------
-
-    if (
-        start_marker in content
-        and end_marker in content
-    ):
-
-        start = content.index(
-            start_marker
-        )
-
-        end = (
-            content.index(
-                end_marker
-            )
-            + len(end_marker)
-        )
-
-        content = (
-            content[:start]
-            + new_block
-            + content[end:]
-        )
-
+    if start_marker in content and end_marker in content:
+        start = content.index(start_marker)
+        end = content.index(end_marker) + len(end_marker)
+        content = content[:start] + block + content[end:]
     else:
+        content = content.rstrip() + "\n\n" + block + "\n"
 
-        content = (
-            content.rstrip()
-            + "\n\n"
-            + new_block
-            + "\n"
-        )
+    README.write_text(content, encoding="utf-8", newline="\n")
 
-    README.write_text(
-        content,
-        encoding="utf-8",
-        newline="\n"
-    )
-
-
-# ============================================================
-# MAIN
-# ============================================================
 
 def main():
-
     failures = []
 
-    log(
-        "========================================"
-    )
-
-    log(
-        "a_srs SRS Builder"
-    )
-
-    log(
-        "Target Source Format: version 4"
-    )
-
-    log(
-        "========================================"
-    )
-
-    # ========================================================
-    # 第一阶段
-    #
-    # 所有无后缀 URL 文件
-    # → 下载
-    # → 合并
-    # → 去重
-    # → JSON
-    # ========================================================
+    log("========================================")
+    log("a_srs SRS Builder")
+    log("Target Source Format: version 4")
+    log("========================================")
 
     url_files = find_url_files()
 
     log("")
-
-    log(
-        "========================================"
-    )
-
-    log(
-        "第一阶段：拉取远程 JSON"
-    )
-
-    log(
-        f"URL 文件数量: {len(url_files)}"
-    )
-
-    log(
-        "========================================"
-    )
+    log("========================================")
+    log("第一阶段：拉取远程 JSON")
+    log(f"URL 文件数量: {len(url_files)}")
+    log("========================================")
 
     for path in url_files:
-
         try:
-
-            process_url_file(
-                path,
-                failures
-            )
-
+            process_url_file(path, failures)
         except Exception as e:
-
             failures.append({
-                "file": relative(path),
+                "file": rel(path),
                 "stage": "URL 文件处理",
-                "detail": str(e)
+                "detail": str(e),
             })
-
-            log(
-                f"      ❌ 文件处理失败: {e}"
-            )
-
-            # 继续下一个文件
+            log(f"      ❌ 文件处理失败: {e}")
             continue
 
-    # ========================================================
-    # 第二阶段
-    #
-    # 所有 JSON
-    # → SRS
-    # ========================================================
-
-    build_all_srs(
-        failures
-    )
-
-    # ========================================================
-    # README
-    #
-    # 覆盖上一次工作流状态
-    # ========================================================
-
-    update_readme(
-        failures
-    )
-
-    # ========================================================
-    # 完成
-    # ========================================================
+    build_all_srs(failures)
+    update_readme(failures)
 
     log("")
-
-    log(
-        "========================================"
-    )
-
-    log(
-        "工作流处理完成"
-    )
-
-    log(
-        f"失败数量: {len(failures)}"
-    )
-
-    log(
-        "========================================"
-    )
-
-    # --------------------------------------------------------
-    # 即使有部分失败，也返回 0。
-    #
-    # 目的：
-    #
-    # A 文件失败
-    # ↓
-    # B/C/D 继续生成
-    #
-    # --------------------------------------------------------
+    log("========================================")
+    log("工作流处理完成")
+    log(f"失败数量: {len(failures)}")
+    log("========================================")
 
     sys.exit(0)
 
 
 if __name__ == "__main__":
-
     main()

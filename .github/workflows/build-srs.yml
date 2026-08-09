@@ -1,0 +1,59 @@
+name: Build SRS Rule Sets
+
+on:
+  push:
+    branches:
+      - main
+
+  workflow_dispatch:
+
+  schedule:
+    - cron: "0 */6 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-srs-main
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3 curl
+
+      - name: Install sing-box stable
+        run: |
+          curl -fsSL https://sing-box.app/install.sh | sudo sh
+
+          echo "sing-box version:"
+          sing-box version
+
+      - name: Build Rule Sets
+        run: |
+          python3 .github/scripts/build_srs.py
+
+      - name: Commit generated files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m "build: update rule sets"
+          git push

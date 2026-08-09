@@ -4,9 +4,7 @@ on:
   push:
     branches:
       - main
-
   workflow_dispatch:
-
   schedule:
     - cron: "0 */6 * * *"
 
@@ -30,13 +28,11 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3 curl
+          sudo apt-get install -y curl
 
       - name: Install sing-box stable
         run: |
           curl -fsSL https://sing-box.app/install.sh | sudo sh
-
-          echo "sing-box version:"
           sing-box version
 
       - name: Build Rule Sets
@@ -47,13 +43,10 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
           git add -A
-
           if git diff --cached --quiet; then
             echo "No changes to commit."
             exit 0
           fi
-
           git commit -m "build: update rule sets"
           git push

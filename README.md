@@ -159,10 +159,3 @@ python3 tests/test_build_srs.py
 ```
 
 父数组为空时只跳过当前比较，不影响后续父系；所有远程 JSON 必须先完整合并，之后才统一执行这些优化算法。
-
-## sing-box 编译核心
-
-SRS 编译固定使用官方 `SagerNet/sing-box` GitHub Release 稳定版 `v1.13.15`，不调用 `sing-box.app/install.sh`。
-
-Runner 自动识别 `amd64` / `arm64`，从 GitHub Release 下载对应 Linux 压缩包，并使用同一 Release 的 `sha256sums.txt` 校验后再执行 `rule-set compile`。
-

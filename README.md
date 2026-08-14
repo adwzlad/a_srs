@@ -114,19 +114,7 @@ sing-box rule-set compile
 
 ```text
 <!-- SRS-BUILD-STATUS:START -->
-
-## SRS 构建状态
-
-### ⚠️ 本次工作流存在失败
-
-单个 URL、JSON 或 SRS 失败不会阻止其它文件继续处理。
-
-| 文件 | 阶段 | 详细错误 |
-|---|---|---|
-| `google` | 远程 JSON 合并/去重/生成 | https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/google-play.json: rules[0].domain 必须是数组 |
-| `netflix` | 远程 JSON 合并/去重/生成 | https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/netflix.json: rules[0].domain 必须是数组 |
-| `x_facebook` | 远程 JSON 合并/去重/生成 | https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/facebook.json: rules[0].domain 必须是数组 |
-
+...
 <!-- SRS-BUILD-STATUS:END -->
 ```
 
@@ -141,3 +129,40 @@ python3 tests/test_build_srs.py
 ```
 
 测试通过后才执行 SRS 构建。
+
+## 去重算法优化说明
+
+本项目的去重不再对全部规则进行两两穷举比较，而是采用与成熟广告规则项目相近的“集合索引 + 父域剪枝”思路。参考了 REIJI007/AdBlock_Rule_For_Sing-box 的 HashSet、父域遍历、父域剪枝思路，以及 privacy-protection-tools/anti-AD 的“合并去重后再抽象化/优化”思路。
+
+- `domain`：HashSet 完全匹配去重。
+- `domain_suffix`：先完全去重，再按 DNS 标签从右向左检查父后缀；不使用普通字符串 `in`，避免 `ample.com` 之类错误包含。
+- `domain_keyword`：使用 Aho-Corasick 自动机处理关键字之间以及关键字对下级字段的包含关系，避免大规模 O(n²) 穷举。
+- `domain_regex`：先完全匹配去重；对下级字段执行真实正则匹配。对于包含明确字面量的正则，先使用 n-gram 倒排索引筛掉不可能匹配的候选，再执行正则，从而减少大量无效 `regex × domain` 比较；无法安全提取字面量时不做预筛选，以保持匹配语义。
+- `ip_cidr`：使用前缀祖先索引检查包含关系，不再让所有 CIDR 两两比较。
+
+### 父系关系
+
+仍严格保持项目约定：
+
+```text
+1 domain_regex
+  ├─→ 2 domain_keyword
+  ├─→ 3 domain_suffix
+  └─→ 4 domain
+
+2 domain_keyword
+  ├─→ 3 domain_suffix
+  └─→ 4 domain
+
+3 domain_suffix
+  └─→ 4 domain
+```
+
+父数组为空时只跳过当前比较，不影响后续父系；所有远程 JSON 必须先完整合并，之后才统一执行这些优化算法。
+
+## sing-box 编译核心
+
+SRS 编译固定使用官方 `SagerNet/sing-box` GitHub Release 稳定版 `v1.13.15`，不调用 `sing-box.app/install.sh`。
+
+Runner 自动识别 `amd64` / `arm64`，从 GitHub Release 下载对应 Linux 压缩包，并使用同一 Release 的 `sha256sums.txt` 校验后再执行 `rule-set compile`。
+

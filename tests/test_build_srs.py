@@ -122,6 +122,48 @@ def test_multiple_remote_rules_are_flattened():
     }
 
 
+def test_version2_scalar_domain_is_converted_to_array():
+    result = merge_all_remote_json([
+        ("url-v2", {"version": 2, "rules": [{
+            "domain": "redirector.c.play.google.com",
+            "domain_suffix": ["googleplay.com"],
+            "domain_regex": [r"^play\.google\.com$"]
+        }]})
+    ])
+    assert result == {
+        "version": 4,
+        "rules": [{
+            "domain": ["redirector.c.play.google.com"],
+            "domain_suffix": ["googleplay.com"],
+            "domain_regex": [r"^play\.google\.com$"]
+        }]
+    }
+
+
+def test_missing_fields_are_valid():
+    result = merge_all_remote_json([
+        ("url-v2", {"version": 2, "rules": [{
+            "domain_suffix": ["example.com"]
+        }]})
+    ])
+    assert result == {
+        "version": 4,
+        "rules": [{"domain_suffix": ["example.com"]}]
+    }
+
+
+def test_invalid_target_field_type_is_rejected():
+    try:
+        merge_all_remote_json([
+            ("bad-url", {"version": 4, "rules": [{"domain": 123}]})
+        ])
+    except ValueError as exc:
+        assert "domain" in str(exc)
+        assert "int" in str(exc)
+    else:
+        raise AssertionError("invalid field type should raise ValueError")
+
+
 if __name__ == "__main__":
     tests = [
         test_domain_exact_only,
@@ -133,6 +175,9 @@ if __name__ == "__main__":
         test_regex_to_all_children,
         test_empty_arrays_and_empty_rule_are_removed,
         test_multiple_remote_rules_are_flattened,
+        test_version2_scalar_domain_is_converted_to_array,
+        test_missing_fields_are_valid,
+        test_invalid_target_field_type_is_rejected,
     ]
     for test in tests:
         test()

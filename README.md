@@ -114,7 +114,19 @@ sing-box rule-set compile
 
 ```text
 <!-- SRS-BUILD-STATUS:START -->
-...
+
+## SRS 构建状态
+
+### ⚠️ 本次工作流存在失败
+
+单个 URL、JSON 或 SRS 失败不会阻止其它文件继续处理。
+
+| 文件 | 阶段 | 详细错误 |
+|---|---|---|
+| `google` | 远程 JSON 合并/去重/生成 | https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/google-play.json: rules[0].domain 必须是数组 |
+| `netflix` | 远程 JSON 合并/去重/生成 | https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/netflix.json: rules[0].domain 必须是数组 |
+| `x_facebook` | 远程 JSON 合并/去重/生成 | https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/facebook.json: rules[0].domain 必须是数组 |
+
 <!-- SRS-BUILD-STATUS:END -->
 ```
 

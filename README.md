@@ -114,7 +114,13 @@ sing-box rule-set compile
 
 ```text
 <!-- SRS-BUILD-STATUS:START -->
-...
+
+## SRS 构建状态
+
+### ✅ 本次工作流全部成功
+
+所有远程规则拉取、合并、统一去重、JSON 生成及 SRS 编译均成功。
+
 <!-- SRS-BUILD-STATUS:END -->
 ```
 

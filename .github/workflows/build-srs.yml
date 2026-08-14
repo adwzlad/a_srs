@@ -1,12 +1,12 @@
 name: Build SRS Rule Sets
 
 on:
-#  push:
-#    branches:
-#      - main
+  push:
+    branches:
+      - main
   workflow_dispatch:
-#  schedule:
-#    - cron: "0 */6 * * *"
+  schedule:
+    - cron: "0 */6 * * *"
 
 permissions:
   contents: write
@@ -34,9 +34,54 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install sing-box stable
+      - name: Install sing-box stable from GitHub Release
+        env:
+          SING_BOX_VERSION: "1.13.15"
         run: |
-          curl -fsSL https://sing-box.app/install.sh | sudo sh
+          set -euo pipefail
+
+          case "$(uname -m)" in
+            x86_64|amd64)
+              SING_BOX_ARCH="amd64"
+              ;;
+            aarch64|arm64)
+              SING_BOX_ARCH="arm64"
+              ;;
+            *)
+              echo "Unsupported runner architecture: $(uname -m)"
+              exit 1
+              ;;
+          esac
+
+          BASE_URL="https://github.com/SagerNet/sing-box/releases/download/v${SING_BOX_VERSION}"
+          ARCHIVE="sing-box-${SING_BOX_VERSION}-linux-${SING_BOX_ARCH}.tar.gz"
+          URL="${BASE_URL}/${ARCHIVE}"
+          SHA256_URL="${BASE_URL}/sha256sums.txt"
+
+          mkdir -p /tmp/sing-box
+          cd /tmp/sing-box
+
+          curl -fL --retry 5 --retry-delay 3 --retry-all-errors             -o "${ARCHIVE}" "${URL}"
+
+          curl -fL --retry 5 --retry-delay 3 --retry-all-errors             -o sha256sums.txt "${SHA256_URL}"
+
+          EXPECTED_SHA256="$(
+            awk -v file="${ARCHIVE}" '$2 == file {print $1; exit}' sha256sums.txt
+          )"
+
+          if [ -z "${EXPECTED_SHA256}" ]; then
+            echo "SHA256 entry not found for ${ARCHIVE}"
+            exit 1
+          fi
+
+          echo "${EXPECTED_SHA256}  ${ARCHIVE}" | sha256sum -c -
+
+          tar -xzf "${ARCHIVE}"
+
+          EXTRACT_DIR="sing-box-${SING_BOX_VERSION}-linux-${SING_BOX_ARCH}"
+          test -x "${EXTRACT_DIR}/sing-box"
+
+          sudo install -m 0755 "${EXTRACT_DIR}/sing-box" /usr/local/bin/sing-box
           sing-box version
 
       - name: Build SRS

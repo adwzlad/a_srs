@@ -47,7 +47,7 @@ def test_all_remote_sources_merge_before_dedupe():
         "version": 4,
         "rules": [{
             "domain": ["a.example", "b.example"],
-            "domain_suffix": ["test.com", "example.com"],
+            "domain_suffix": ["example.com", "test.com"],
         }],
     }
 

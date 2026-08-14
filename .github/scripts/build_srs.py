@@ -523,11 +523,20 @@ def append_remote_json_to_standard(standard_rule, remote_data, source):
             values = remote_rule.get(field)
             if values is None:
                 continue
-            if not isinstance(values, list):
+
+            # version 2 等旧版 sing-box 规则源允许单个 domain 使用字符串，
+            # 例如: "domain": "example.com"。转换到 version 4 时统一包装为数组。
+            # 其余情况下，目标字段必须是数组；错误类型不静默丢弃，继续让当前 URL
+            # 失败并写入 README，避免悄悄丢规则。
+            if isinstance(values, str):
+                values = [values]
+            elif not isinstance(values, list):
                 raise ValueError(
-                    f"{source}: rules[{rule_index}].{field} 必须是数组"
+                    f"{source}: rules[{rule_index}].{field} 必须是数组或字符串，"
+                    f"实际类型: {type(values).__name__}"
                 )
-            # 这里只合并，不去重。
+
+            # 这里只合并，不去重。所有远程 JSON 合并完成后才统一去重。
             standard_rule[field].extend(values)
 
 

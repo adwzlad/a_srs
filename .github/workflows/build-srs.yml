@@ -83,76 +83,121 @@ jobs:
           mkdir -p verify
 
 
-          for srs in srs/*.srs; do
+          SRS_COUNT=$(find srs -maxdepth 1 -type f -name "*.srs" | wc -l)
 
 
-            name=$(basename "$srs" .srs)
-
-            json="${name}.json"
-
-
-            echo ""
-            echo "[CHECK] ${name}"
+          if [ "${SRS_COUNT}" -eq 0 ]; then
+              echo "ERROR: No SRS files found in srs/"
+              exit 1
+          fi
 
 
-            if [ ! -f "$json" ]; then
-              echo "Skip: ${json} not found"
-              continue
-            fi
+          echo "Found ${SRS_COUNT} SRS files:"
 
 
+          find srs -maxdepth 1 -type f -name "*.srs" | sort
 
-            # SRS binary rule-set decode back to JSON
 
-            sing-box rule-set decompile \
-              --output "verify/${name}.json" \
-              "$srs"
+          echo ""
+          echo "========================================"
 
 
 
-            # Normalize JSON order
+          while IFS= read -r srs_file
+          do
 
-            jq -S . "$json" \
-              > "verify/${name}.source.sorted.json"
+              name=$(basename "${srs_file}" .srs)
 
-
-            jq -S . "verify/${name}.json" \
-              > "verify/${name}.srs.sorted.json"
+              json_file="${name}.json"
 
 
-
-            # Compare
-
-            if diff -u \
-              "verify/${name}.source.sorted.json" \
-              "verify/${name}.srs.sorted.json"
-            then
-
-              echo "✓ ${name}.srs OK"
-
-            else
 
               echo ""
-              echo "========================================"
-              echo "ERROR: ${name}.srs mismatch"
-              echo "========================================"
+              echo "[CHECK] ${name}"
 
 
-              echo "JSON count:"
-              jq '.rules[0] | map_values(length)' "$json" || true
+
+              if [ ! -f "${json_file}" ]; then
+
+                  echo "ERROR: Missing JSON file:"
+                  echo "${json_file}"
+
+                  exit 1
+
+              fi
 
 
-              echo "SRS count:"
-              jq '.rules[0] | map_values(length)' \
-                "verify/${name}.json" || true
+
+              echo "Decompile SRS..."
+
+              sing-box rule-set decompile \
+                --output "verify/${name}.json" \
+                "${srs_file}"
 
 
-              exit 1
 
-            fi
+              echo "Normalize JSON..."
+
+              jq -S . \
+                "${json_file}" \
+                > "verify/${name}.source.sorted.json"
 
 
-          done
+
+              jq -S . \
+                "verify/${name}.json" \
+                > "verify/${name}.srs.sorted.json"
+
+
+
+              echo "Compare JSON and SRS..."
+
+
+
+              if diff -u \
+                "verify/${name}.source.sorted.json" \
+                "verify/${name}.srs.sorted.json"
+              then
+
+                  echo "✓ ${name}.srs OK"
+
+
+              else
+
+                  echo ""
+                  echo "========================================"
+                  echo "ERROR: ${name}.srs mismatch"
+                  echo "========================================"
+
+
+                  echo ""
+                  echo "Source JSON count:"
+
+                  jq '.rules[0] | map_values(length)' \
+                    "${json_file}" || true
+
+
+
+                  echo ""
+                  echo "Decoded SRS count:"
+
+                  jq '.rules[0] | map_values(length)' \
+                    "verify/${name}.json" || true
+
+
+
+                  exit 1
+
+              fi
+
+
+          done < <(
+              find srs \
+                -maxdepth 1 \
+                -type f \
+                -name "*.srs" \
+                | sort
+          )
 
 
 

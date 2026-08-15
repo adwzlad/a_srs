@@ -15,41 +15,173 @@ concurrency:
   group: build-srs-main
   cancel-in-progress: false
 
+
 jobs:
+
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+
     steps:
+
       - name: Checkout
         uses: actions/checkout@v5
+
 
       - name: Run unit tests
-        run: python3 tests/test_build_srs.py
+        run: |
+          python3 tests/test_build_srs.py
+
+
 
   build:
+
     needs: test
+
     runs-on: ubuntu-latest
     timeout-minutes: 60
+
+
     steps:
+
+
       - name: Checkout
         uses: actions/checkout@v5
+
+
 
       - name: Install sing-box stable
         run: |
           curl -fsSL https://sing-box.app/install.sh | sudo sh
           sing-box version
 
+
+
+      - name: Install jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+
+
       - name: Build SRS
-        run: python3 .github/scripts/build_srs.py
+        run: |
+          python3 .github/scripts/build_srs.py
+
+
+
+      - name: Verify SRS equals JSON
+        run: |
+          set -euo pipefail
+
+
+          echo "========================================"
+          echo "Verify JSON -> SRS -> JSON"
+          echo "========================================"
+
+
+          mkdir -p verify
+
+
+          for srs in srs/*.srs; do
+
+
+            name=$(basename "$srs" .srs)
+
+            json="${name}.json"
+
+
+            echo ""
+            echo "[CHECK] ${name}"
+
+
+            if [ ! -f "$json" ]; then
+              echo "Skip: ${json} not found"
+              continue
+            fi
+
+
+
+            # SRS binary rule-set decode back to JSON
+
+            sing-box rule-set decompile \
+              --output "verify/${name}.json" \
+              "$srs"
+
+
+
+            # Normalize JSON order
+
+            jq -S . "$json" \
+              > "verify/${name}.source.sorted.json"
+
+
+            jq -S . "verify/${name}.json" \
+              > "verify/${name}.srs.sorted.json"
+
+
+
+            # Compare
+
+            if diff -u \
+              "verify/${name}.source.sorted.json" \
+              "verify/${name}.srs.sorted.json"
+            then
+
+              echo "✓ ${name}.srs OK"
+
+            else
+
+              echo ""
+              echo "========================================"
+              echo "ERROR: ${name}.srs mismatch"
+              echo "========================================"
+
+
+              echo "JSON count:"
+              jq '.rules[0] | map_values(length)' "$json" || true
+
+
+              echo "SRS count:"
+              jq '.rules[0] | map_values(length)' \
+                "verify/${name}.json" || true
+
+
+              exit 1
+
+            fi
+
+
+          done
+
+
+
+          echo ""
+          echo "========================================"
+          echo "All SRS verified successfully"
+          echo "========================================"
+
+
 
       - name: Commit generated files
         run: |
+
           git config user.name "github-actions[bot]"
+
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+
           git add -A
+
+
           if git diff --cached --quiet; then
+
             echo "No changes to commit."
+
           else
+
             git commit -m "build: update rule sets"
+
             git push
+
           fi

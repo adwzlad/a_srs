@@ -83,11 +83,11 @@ jobs:
           mkdir -p verify
 
 
-          SRS_COUNT=$(find srs -maxdepth 1 -type f -name "*.srs" | wc -l)
+          SRS_COUNT=$(find . -maxdepth 1 -type f -name "*.srs" | wc -l)
 
 
           if [ "${SRS_COUNT}" -eq 0 ]; then
-              echo "ERROR: No SRS files found in srs/"
+              echo "ERROR: No SRS files found in project root"
               exit 1
           fi
 
@@ -95,7 +95,7 @@ jobs:
           echo "Found ${SRS_COUNT} SRS files:"
 
 
-          find srs -maxdepth 1 -type f -name "*.srs" | sort
+          find . -maxdepth 1 -type f -name "*.srs" | sort
 
 
           echo ""
@@ -105,6 +105,7 @@ jobs:
 
           while IFS= read -r srs_file
           do
+
 
               name=$(basename "${srs_file}" .srs)
 
@@ -119,7 +120,7 @@ jobs:
 
               if [ ! -f "${json_file}" ]; then
 
-                  echo "ERROR: Missing JSON file:"
+                  echo "ERROR: Missing JSON:"
                   echo "${json_file}"
 
                   exit 1
@@ -150,9 +151,7 @@ jobs:
 
 
 
-              echo "Compare JSON and SRS..."
-
-
+              echo "Compare..."
 
               if diff -u \
                 "verify/${name}.source.sorted.json" \
@@ -160,7 +159,6 @@ jobs:
               then
 
                   echo "✓ ${name}.srs OK"
-
 
               else
 
@@ -170,20 +168,15 @@ jobs:
                   echo "========================================"
 
 
-                  echo ""
                   echo "Source JSON count:"
-
                   jq '.rules[0] | map_values(length)' \
                     "${json_file}" || true
 
 
-
                   echo ""
                   echo "Decoded SRS count:"
-
                   jq '.rules[0] | map_values(length)' \
                     "verify/${name}.json" || true
-
 
 
                   exit 1
@@ -192,7 +185,7 @@ jobs:
 
 
           done < <(
-              find srs \
+              find . \
                 -maxdepth 1 \
                 -type f \
                 -name "*.srs" \
@@ -200,12 +193,10 @@ jobs:
           )
 
 
-
           echo ""
           echo "========================================"
           echo "All SRS verified successfully"
           echo "========================================"
-
 
 
       - name: Commit generated files
